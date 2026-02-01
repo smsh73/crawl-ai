@@ -1,0 +1,184 @@
+version: "3.8"
+
+services:
+  # ==========================================================================
+  # Core Infrastructure
+  # ==========================================================================
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: crawlai-postgres
+    environment:
+      POSTGRES_USER: crawlai
+      POSTGRES_PASSWORD: crawlai
+      POSTGRES_DB: crawlai
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crawlai"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: crawlai-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ==========================================================================
+  # Application Services
+  # ==========================================================================
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: crawlai-api
+    command: uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://crawlai:crawlai@postgres:5432/crawlai
+      - REDIS_URL=redis://redis:6379/0
+      - DEBUG=true
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./src:/app/src:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # ==========================================================================
+  # Celery Workers & Scheduler
+  # ==========================================================================
+
+  celery-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: crawlai-celery-beat
+    command: celery -A src.scheduler.celery_app beat --loglevel=info
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://crawlai:crawlai@postgres:5432/crawlai
+      - REDIS_URL=redis://redis:6379/0
+    env_file:
+      - .env
+    volumes:
+      - ./src:/app/src:ro
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+
+  celery-worker-crawl:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: crawlai-worker-crawl
+    command: celery -A src.scheduler.celery_app worker --loglevel=info -Q crawl,default --concurrency=4
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://crawlai:crawlai@postgres:5432/crawlai
+      - REDIS_URL=redis://redis:6379/0
+    env_file:
+      - .env
+    volumes:
+      - ./src:/app/src:ro
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  celery-worker-process:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: crawlai-worker-process
+    command: celery -A src.scheduler.celery_app worker --loglevel=info -Q process --concurrency=2
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://crawlai:crawlai@postgres:5432/crawlai
+      - REDIS_URL=redis://redis:6379/0
+    env_file:
+      - .env
+    volumes:
+      - ./src:/app/src:ro
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  celery-worker-notify:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: crawlai-worker-notify
+    command: celery -A src.scheduler.celery_app worker --loglevel=info -Q notify,report --concurrency=2
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://crawlai:crawlai@postgres:5432/crawlai
+      - REDIS_URL=redis://redis:6379/0
+    env_file:
+      - .env
+    volumes:
+      - ./src:/app/src:ro
+    depends_on:
+      - redis
+      - postgres
+    restart: unless-stopped
+
+  # ==========================================================================
+  # Monitoring
+  # ==========================================================================
+
+  flower:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: crawlai-flower
+    command: celery -A src.scheduler.celery_app flower --port=5555
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    env_file:
+      - .env
+    ports:
+      - "5555:5555"
+    depends_on:
+      - redis
+      - celery-beat
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  default:
+    name: crawlai-network

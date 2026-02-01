@@ -1,0 +1,45 @@
+version: "3.8"
+
+# Development override - lighter setup for local development
+# Usage: docker-compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./src:/app/src  # Mount source for hot reload
+    environment:
+      - DEBUG=true
+
+  # Single worker for development
+  celery-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: crawlai-worker-dev
+    command: celery -A src.scheduler.celery_app worker --loglevel=info -Q crawl,process,notify,report,default --concurrency=2
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://crawlai:crawlai@postgres:5432/crawlai
+      - REDIS_URL=redis://redis:6379/0
+    env_file:
+      - .env
+    volumes:
+      - ./src:/app/src
+    depends_on:
+      - redis
+      - postgres
+
+  # Disable separate workers in dev
+  celery-worker-crawl:
+    profiles:
+      - production
+
+  celery-worker-process:
+    profiles:
+      - production
+
+  celery-worker-notify:
+    profiles:
+      - production
