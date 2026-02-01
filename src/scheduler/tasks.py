@@ -64,7 +64,7 @@ async def _crawl_source_async(task, source_id: str) -> dict[str, Any]:
             job_type="crawl",
             status=JobStatus.RUNNING,
             started_at=datetime.utcnow(),
-            metadata={"source_id": source_id, "source_name": source.name},
+            job_metadata={"source_id": source_id, "source_name": source.name},
         )
         db.add(job)
         await db.flush()
